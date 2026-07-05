@@ -1,115 +1,213 @@
 # Automated Infrastructure-as-Code Deployment Pipeline (`iac-deployment-pipeline`)
 
-Enterprise-grade platform engineering repository with modular Terraform for a secure multi-tier AWS VPC and a managed EKS compute cluster, plus a CI/CD pipeline skeleton using GitHub Actions.
+Enterprise-oriented platform engineering repository that provisions a secure multi-tier AWS network and a managed **EKS** compute cluster using **modular Terraform**, wired to a **GitHub Actions** CI/CD pipeline that authenticates to AWS via **OIDC** (no long-lived keys).
 
-**What this repo contains**
+> **Portfolio mode — safe by default.** This repo is intended as a demonstration. All helper scripts that would create real cloud or GitHub resources are dry-run by default and only print the actions they *would* take. They require an explicit `--execute` flag to make any changes. Running `terraform apply` (locally or via the gated CI job) is the only path that provisions real infrastructure.
 
-- Terraform skeleton that demonstrates a production-oriented VPC + subnet layout and a placeholder EKS cluster resource.
-- An example workflow and README with commands, diagram and hardening notes.
+---
 
 ## Architecture Topology
 
 ```mermaid
 graph TD
-    A[Local Code Mutation] -->|Git Push Event| B[GitHub Actions Runner Engine]
-    B -->|Step 1: Quality Audit| C{Terraform Init & Validate}
-    C -->|Pass| D[Multi-stage Container Build & Cache]
-    D -->|Step 2: Plan| E[Terraform Plan (Dry Run)]
-    E -->|Step 3: Apply| F[Terraform Apply → AWS (VPC, Subnets, EKS)]
+    Dev[Local Code Change] -->|git push to main| GH[GitHub Actions Runner]
 
-    style B fill:#1e1e2f,stroke:#22c55e,stroke-width:2px
-    style F fill:#0f172a,stroke:#3b82f6,stroke-width:2px
+    subgraph CI[CI: terraform job]
+        GH --> FMT[terraform fmt -check]
+        FMT --> INIT[terraform init]
+        INIT --> VAL[terraform validate]
+        VAL --> PLAN[terraform plan -out=plan.tfplan]
+        PLAN --> ART[Upload plan artifact]
+    end
+
+    ART --> GATE{Environment: production\nmanual approval}
+    GATE -->|approved| APPLY[terraform apply plan.tfplan]
+
+    subgraph AWS[AWS Account]
+        APPLY --> VPC[VPC + Public/Private Subnets\nIGW + NAT + Route Tables]
+        APPLY --> IAM[IAM Roles\nCluster + Node + Policy Attachments]
+        VPC --> EKS[EKS Cluster + Managed Node Group\n+ Security Groups]
+        IAM --> EKS
+    end
+
+    style GH fill:#1e1e2f,stroke:#22c55e,stroke-width:2px
+    style EKS fill:#0f172a,stroke:#3b82f6,stroke-width:2px
+    style GATE fill:#3b0764,stroke:#a855f7,stroke-width:2px
 ```
 
-## System Stack & Core Dependencies
+The GitHub Actions credential step assumes an AWS IAM role via OIDC, keeping the pipeline free of static secrets:
 
-- Infrastructure: Terraform (recommended >= 1.5, tested with 1.7)
-- Cloud: Amazon Web Services (AWS)
-- CI: GitHub Actions
+```mermaid
+sequenceDiagram
+    participant GHA as GitHub Actions
+    participant STS as AWS STS
+    participant TF as Terraform
+    GHA->>STS: Request token (OIDC id-token)
+    STS-->>GHA: Short-lived credentials (AssumeRoleWithWebIdentity)
+    GHA->>TF: Run plan / apply with temp creds
+    TF-->>GHA: Plan / apply result
+```
+
+---
+
+## What gets provisioned
+
+The root module in [terraform/main.tf](terraform/main.tf) composes three purpose-built modules:
+
+| Module | Path | Resources |
+| --- | --- | --- |
+| **vpc** | [terraform/modules/vpc](terraform/modules/vpc/main.tf) | `aws_vpc`, public + private `aws_subnet`, `aws_internet_gateway`, `aws_eip` + `aws_nat_gateway`, public/private `aws_route_table` + associations |
+| **iam** | [terraform/modules/iam](terraform/modules/iam/main.tf) | EKS cluster role (`AmazonEKSClusterPolicy`, `AmazonEKSServicePolicy`) and node role (`AmazonEKSWorkerNodePolicy`, `AmazonEC2ContainerRegistryReadOnly`, `AmazonEKS_CNI_Policy`) |
+| **eks** | [terraform/modules/eks](terraform/modules/eks/main.tf) | `aws_eks_cluster`, `aws_eks_node_group` (t3.medium, 1–2 nodes), cluster + node `aws_security_group` |
+
+Module inputs are threaded through in [terraform/main.tf](terraform/main.tf): the IAM role ARNs feed the EKS cluster/node group, and the VPC subnet IDs feed the cluster networking.
+
+---
+
+## System stack & dependencies
+
+- **Infrastructure:** Terraform `>= 1.5.0` (CI pins `1.7.0`)
+- **Provider:** `hashicorp/aws` `~> 5.0`
+- **Cloud:** Amazon Web Services (default region `eu-west-2`)
+- **CI/CD:** GitHub Actions with OIDC (`aws-actions/configure-aws-credentials@v3`, `hashicorp/setup-terraform@v3`)
+- **Testing:** [Terratest](https://terratest.gruntwork.io/) skeleton (plan-only) in [tests/terratest](tests/terratest/main_test.go)
+
+---
 
 ## Repository layout
 
 ```
 iac-deployment-pipeline/
 ├── .github/
-│   └── workflows/
-│       └── deploy.yml       # CI skeleton (workflow example)
+│   ├── workflows/
+│   │   └── deploy.yml            # CI: fmt/init/validate/plan + gated apply (OIDC)
+│   └── create-environment.sh     # Create GitHub 'production' environment (dry-run by default)
 ├── terraform/
-│   └── main.tf              # Example VPC, subnets and EKS placeholder
+│   ├── main.tf                   # Root module — composes vpc + iam + eks
+│   ├── variables.tf              # Root input variables
+│   ├── outputs.tf                # Root outputs
+│   ├── backend.tf                # Commented S3 + DynamoDB remote-state example
+│   ├── backend-stack.yml         # CloudFormation to create the state bucket + lock table
+│   ├── deploy-backend-stack.sh   # Deploy backend-stack.yml (dry-run by default)
+│   ├── create-backend.sh         # Create S3/DynamoDB via AWS CLI (dry-run by default)
+│   ├── terraform.tfvars.example  # Sample variable values
+│   ├── README-modules.md         # Module overview
+│   └── modules/
+│       ├── vpc/                  # Network: VPC, subnets, IGW, NAT, route tables
+│       ├── iam/                  # IAM roles + managed policy attachments
+│       └── eks/                  # EKS cluster, node group, security groups
+├── tests/
+│   └── terratest/                # Go plan-only test skeleton
+├── .gitignore
 └── README.md
 ```
 
-## Quick Audit Notes (Terraform)
+---
 
-- `terraform/main.tf` is a minimal, illustrative example — it will NOT create a functional EKS cluster as-is.
-  - Missing required IAM resources: `aws_iam_role` for EKS control plane, IAM policies, and node instance roles.
-  - Missing networking resources commonly required for a public/private VPC: Internet Gateway, Route Table(s), and Route Table associations for public subnets.
-  - No security groups, no EKS addon or nodegroup configuration.
-  - Contains a hard-coded placeholder `role_arn` value (example `arn:aws:iam::123456789012:role/MockEKSRuntimeRole`). Replace with a variable or real IAM role.
+## Input variables
 
-Recommendations:
+Defined in [terraform/variables.tf](terraform/variables.tf). See [terraform/terraform.tfvars.example](terraform/terraform.tfvars.example) for a sample.
 
-- Split the configuration into modules (vpc, networking, eks, iam, outputs) for reuse and testability.
-- Add `variables.tf`, `outputs.tf`, and a `providers.tf` with backend configuration for a remote state (S3 + DynamoDB lock) in non-local environments.
-- Add `terraform.tfvars` (sample) and sensible defaults for `region`, `cluster_name`, and `role_arn`.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `region` | `eu-west-2` | AWS region |
+| `cluster_name` | `platform-core-production-cluster` | EKS cluster name (also used to name IAM roles) |
+| `ssh_key_name` | *(required)* | EC2 SSH key for node-group remote access |
+| `vpc_cidr` | `10.0.0.0/16` | VPC CIDR |
+| `public_subnet_cidr` | `10.0.1.0/24` | Public subnet CIDR |
+| `private_subnet_cidr` | `10.0.2.0/24` | Private subnet CIDR |
+| `tags` | `{ Environment = "Production", Owner = "platform-team" }` | Common resource tags |
+| `remote_state_bucket` | placeholder | S3 bucket for remote state (used only when backend enabled) |
+| `remote_state_dynamodb_table` | placeholder | DynamoDB lock table (used only when backend enabled) |
 
-## Portfolio mode — safe by default
+## Outputs
 
-This repository is configured for portfolio/demo use. All automation scripts that would create cloud or GitHub resources are intentionally safe-by-default and will only display the commands to run unless you pass `--execute`.
-
-- Scripts that are safe-by-default:
-  - `terraform/deploy-backend-stack.sh` — preview CloudFormation deploy; add `--execute` to actually deploy.
-  - `terraform/create-backend.sh` — preview AWS CLI calls to create S3/DynamoDB; add `--execute` to run.
-  - `.github/create-environment.sh` — preview GitHub API calls; add `--execute` to run.
-
-Be careful: running with `--execute` will create real cloud or GitHub resources. For a portfolio, you can keep the scripts as-is and they will not touch your accounts.
-
-## Local Setup / Usage
-
-1. Install required CLIs:
-
-```bash
-terraform --version
-git --version
-```
-
-2. Work locally (recommended first-run):
-
-```bash
-cd terraform
-terraform init
-terraform validate
-terraform plan
-```
-
-Notes:
-
-- The example `main.tf` is intentionally compact. Before `terraform apply` you must:
-  - Provide a valid `role_arn` for EKS control plane via a variable or create the IAM role in Terraform (recommended).
-  - Add required networking pieces (Internet Gateway / Route Tables) if you expect the cluster to reach the internet.
-  - Configure a remote state backend for team use (S3 + DynamoDB lock recommended).
-
-## Example improvements to implement next
-
-- Add `variables.tf` and `outputs.tf`.
-- Add an `iam.tf` that creates the EKS role with the correct assume-role policy.
-- Add `node_groups` via `aws_eks_node_group` or use `aws_eks_fargate_profile` depending on workload.
-- Harden networking: create NAT Gateways for private subnets (cost/availability trade-offs) and explicit route tables.
-- Add GitHub Actions workflow that runs `terraform fmt`, `terraform init -backend=false`, `terraform validate`, and `terraform plan` and stores the plan as an artifact.
-
-## CI/CD pipeline notes
-
-- The provided workflow skeleton is a good starting point for quick validation. For production pipelines:
-  - Use the official `hashicorp/setup-terraform` action to pin versions.
-  - Cache plugin and module downloads if your CI runners are ephemeral.
-  - Store sensitive credentials (AWS keys) in GitHub Secrets and use short-lived OIDC tokens and workload identity where possible.
+From [terraform/outputs.tf](terraform/outputs.tf): `vpc_id`, `public_subnet_id`, `private_subnet_id`, `eks_cluster_role_arn`, `eks_node_role_arn`, and a `cluster_kubeconfig_placeholder`. The root also re-exports `cluster_name` and `cluster_endpoint`.
 
 ---
 
-If you want, I can:
+## Local usage
 
-- create `variables.tf` and `outputs.tf` templates,
-- add a minimal `iam.tf` to provision a correct EKS control-plane role, or
-- scaffold a production-ready workflow with remote state configuration.
+Validate the configuration without touching any AWS account:
 
-Files audited: [terraform/main.tf](terraform/main.tf) — updated: [README.md](README.md)
+```bash
+cd terraform
+terraform fmt -check
+terraform init -backend=false
+terraform validate
+```
+
+Preview a plan (requires AWS credentials + a valid `ssh_key_name`; this reads from AWS but creates nothing):
+
+```bash
+cp terraform.tfvars.example terraform.tfvars   # then edit values (set your ssh_key_name)
+terraform plan
+```
+
+Apply (creates real, billable AWS resources — including a NAT Gateway and EKS cluster):
+
+```bash
+terraform apply
+```
+
+> `ssh_key_name` has no default and must be provided. The NAT Gateway and EKS control plane incur ongoing cost while they exist.
+
+---
+
+## Remote state backend (optional)
+
+A remote backend keeps state shared and locked for team use. It is intentionally **commented out** in [terraform/backend.tf](terraform/backend.tf) so nothing runs against your account by accident.
+
+To enable it:
+
+1. Create the S3 bucket + DynamoDB lock table (choose one, both dry-run by default):
+   ```bash
+   cd terraform
+   ./create-backend.sh <bucket-name> <lock-table> --execute
+   # or via CloudFormation:
+   ./deploy-backend-stack.sh <stack-name> <bucket-name> <lock-table> --execute
+   ```
+2. Fill in the bucket/table names and uncomment the `backend "s3"` block in [terraform/backend.tf](terraform/backend.tf).
+3. Re-initialize: `terraform init`.
+
+---
+
+## CI/CD pipeline
+
+Defined in [.github/workflows/deploy.yml](.github/workflows/deploy.yml). On push to `main`:
+
+1. **`terraform` job** — checkout, setup Terraform, assume AWS role via OIDC, then `fmt -check` → `init` → `validate` → `plan -out=plan.tfplan`, and upload the plan as an artifact.
+2. **`apply` job** — depends on the plan job, targets the `production` GitHub Environment (add required reviewers to gate it), downloads the plan artifact, and runs `terraform apply plan.tfplan`.
+
+### Required repository configuration
+
+- **Secret** `AWS_ROLE_TO_ASSUME` — ARN of an IAM role that trusts GitHub's OIDC provider.
+- **Environment** `production` — create it and add reviewers to require manual approval before apply:
+  ```bash
+  ./.github/create-environment.sh --execute   # dry-run without --execute
+  ```
+
+---
+
+## Testing
+
+A plan-only [Terratest](https://terratest.gruntwork.io/) skeleton lives in [tests/terratest/main_test.go](tests/terratest/main_test.go). It exercises `terraform init`/`plan` without applying:
+
+```bash
+cd tests/terratest
+go test -v -timeout 30m
+```
+
+---
+
+## Security & hardening notes
+
+- **No static cloud credentials** — CI uses OIDC short-lived tokens.
+- **Private egress via NAT** — private subnet routes outbound through a NAT Gateway; the public subnet routes through the Internet Gateway.
+- **Least-privilege IAM** — roles attach only the AWS-managed policies EKS requires.
+- **Gated production apply** — protect the `production` environment with required reviewers.
+- Consider adding: multi-AZ subnets for HA, `endpoint_private_access` on the EKS control plane, and encrypted secrets/KMS for state.
+
+---
+
+Files audited: [terraform/main.tf](terraform/main.tf), [terraform/variables.tf](terraform/variables.tf), [terraform/outputs.tf](terraform/outputs.tf), [terraform/modules/vpc/main.tf](terraform/modules/vpc/main.tf), [terraform/modules/iam/main.tf](terraform/modules/iam/main.tf), [terraform/modules/eks/main.tf](terraform/modules/eks/main.tf), [.github/workflows/deploy.yml](.github/workflows/deploy.yml).
