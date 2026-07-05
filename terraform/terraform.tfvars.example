@@ -1,0 +1,17 @@
+# Example terraform.tfvars
+region = "eu-west-2"
+cluster_name = "platform-core-production-cluster"
+ssh_key_name = "your-ssh-key-name"
+
+vpc_cidr = "10.0.0.0/16"
+public_subnet_cidr = "10.0.1.0/24"
+private_subnet_cidr = "10.0.2.0/24"
+
+tags = {
+  Environment = "Production"
+  Owner = "platform-team"
+}
+
+# Remote state placeholders — replace before enabling backend
+remote_state_bucket = "your-terraform-state-bucket"
+remote_state_dynamodb_table = "your-tf-lock-table"

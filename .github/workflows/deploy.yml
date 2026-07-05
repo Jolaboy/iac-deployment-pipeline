@@ -1,0 +1,98 @@
+name: Production IaC Platform Continuous Delivery
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform plan & apply (OIDC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }} # set in repo secrets
+          aws-region: ${{ env.AWS_REGION || 'eu-west-2' }}
+
+      - name: Terraform Fmt
+        run: |
+          cd terraform
+          terraform fmt -check
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          # If you enable remote state, supply backend config via secrets or repo vars
+          terraform init -input=false
+
+      - name: Terraform Validate
+        run: |
+          cd terraform
+          terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd terraform
+          terraform plan -out=plan.tfplan
+
+      - name: Upload Plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/plan.tfplan
+      - name: Upload Plan (for review)
+        run: echo "Plan uploaded as artifact"
+
+  apply:
+    name: Terraform Apply (manual gated)
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION || 'eu-west-2' }}
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -input=false plan.tfplan
+
+      # Apply should be gated — example manual step shown commented
+      # - name: Terraform Apply
+      #   if: github.event_name == 'workflow_dispatch' && github.actor == 'ops-user'
+      #   run: |
+      #     cd terraform
+      #     terraform apply -input=false plan.tfplan

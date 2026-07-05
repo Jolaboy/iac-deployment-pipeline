@@ -1,0 +1,42 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*.tfvars
+*.tfvars.json
+
+# Ignore local provider binaries and plugins
+**/.terraform/providers/
+**/.terraform/plugins/
+
+# AWS credentials and environment files
+.aws/
+credentials
+.env
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs and build
+logs/
+*.log
+dist/
+node_modules/
+
+# Personal key files
+*.key
+*.pem

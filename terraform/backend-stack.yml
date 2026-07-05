@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Terraform backend resources (S3 bucket + DynamoDB lock table)
+
+Parameters:
+  StateBucketName:
+    Type: String
+    Description: S3 bucket name for terraform state
+  LockTableName:
+    Type: String
+    Description: DynamoDB table name for state locks
+  Region:
+    Type: String
+    Default: eu-west-2
+
+Resources:
+  StateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref StateBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  StateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StateBucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${StateBucketName}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: AES256
+
+  LockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref LockTableName
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket storing Terraform state
+    Value: !Ref StateBucketName
+  LockTableName:
+    Description: DynamoDB table name used for state locking
+    Value: !Ref LockTableName
