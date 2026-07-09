@@ -1,0 +1,21 @@
+{
+  "name": "platform-core-service",
+  "version": "1.0.0",
+  "description": "Sample containerized service deployed by the IaC pipeline. Includes Jest unit tests and a multi-stage Docker build.",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest --ci --runInBand"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "license": "MIT"
+}

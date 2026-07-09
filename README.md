@@ -70,7 +70,9 @@ Module inputs are threaded through in [terraform/main.tf](terraform/main.tf): th
 - **Provider:** `hashicorp/aws` `~> 5.0`
 - **Cloud:** Amazon Web Services (default region `eu-west-2`)
 - **CI/CD:** GitHub Actions with OIDC (`aws-actions/configure-aws-credentials@v3`, `hashicorp/setup-terraform@v3`)
-- **Testing:** [Terratest](https://terratest.gruntwork.io/) skeleton (plan-only) in [tests/terratest](tests/terratest/main_test.go)
+- **Application:** Node.js 20 + Express sample service ([app/](app/src/app.js)) with a multi-stage Docker build
+- **Container CI:** Docker Buildx with GitHub Actions layer caching (`docker/build-push-action@v6`, `cache-from/cache-to: type=gha`)
+- **Testing:** [Jest](https://jestjs.io/) unit + route tests ([app/tests](app/tests/app.test.js)) run in CI; [Terratest](https://terratest.gruntwork.io/) skeleton (plan-only) in [tests/terratest](tests/terratest/main_test.go)
 
 ---
 
@@ -80,8 +82,15 @@ Module inputs are threaded through in [terraform/main.tf](terraform/main.tf): th
 iac-deployment-pipeline/
 ├── .github/
 │   ├── workflows/
-│   │   └── deploy.yml            # CI: fmt/init/validate/plan + gated apply (OIDC)
+│   │   ├── deploy.yml            # CI: fmt/init/validate/plan + gated apply (OIDC)
+│   │   └── app-ci.yml            # CI: Jest tests + multi-stage Docker build (layer cached)
 │   └── create-environment.sh     # Create GitHub 'production' environment (dry-run by default)
+├── app/
+│   ├── src/                      # Express service (app.js + server.js)
+│   ├── tests/                    # Jest unit + route tests
+│   ├── Dockerfile                # Multi-stage build (deps → test → prod-deps → runtime)
+│   ├── .dockerignore
+│   └── package.json
 ├── terraform/
 │   ├── main.tf                   # Root module — composes vpc + iam + eks
 │   ├── variables.tf              # Root input variables
@@ -189,7 +198,41 @@ Defined in [.github/workflows/deploy.yml](.github/workflows/deploy.yml). On push
 
 ---
 
-## Testing
+## Application service & container build
+
+A small Node.js 20 + Express service lives in [app/](app/src/app.js) to demonstrate the containerized delivery path that sits alongside the infrastructure pipeline.
+
+Run the app locally:
+
+```bash
+cd app
+npm ci
+npm start          # serves on http://localhost:3000  (/, /healthz, POST /sum)
+```
+
+### Multi-stage Docker build
+
+[app/Dockerfile](app/Dockerfile) is split into four stages so that expensive layers are cached and the shipped image stays minimal:
+
+1. **deps** — `npm ci` against `package*.json` only, so the dependency layer is reused whenever manifests are unchanged.
+2. **test** — runs the Jest suite during the build; a failing test fails the image build.
+3. **prod-deps** — `npm ci --omit=dev` for a lean runtime dependency set.
+4. **runtime** — copies only production `node_modules` + `src` into a slim `node:20-alpine` image running as the non-root `node` user.
+
+```bash
+cd app
+docker build -t platform-core-service:local .
+docker run --rm -p 3000:3000 platform-core-service:local
+```
+
+### Container CI with layer caching
+
+[.github/workflows/app-ci.yml](.github/workflows/app-ci.yml) runs on changes under `app/`:
+
+- **test job** — `actions/setup-node` (with npm cache) → `npm ci` → `npm test` (Jest).
+- **build job** — Docker Buildx builds the multi-stage image with `cache-from`/`cache-to: type=gha`, so unchanged dependency layers are restored from the GitHub Actions cache instead of rebuilt on every run.
+
+## Infrastructure testing
 
 A plan-only [Terratest](https://terratest.gruntwork.io/) skeleton lives in [tests/terratest/main_test.go](tests/terratest/main_test.go). It exercises `terraform init`/`plan` without applying:
 
