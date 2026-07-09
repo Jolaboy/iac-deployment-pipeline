@@ -20,19 +20,19 @@ graph TD
         PLAN --> ART[Upload plan artifact]
     end
 
-    ART --> GATE{Environment: production\nmanual approval}
+    ART --> GATE{Environment: production<br/>manual approval}
     GATE -->|approved| APPLY[terraform apply plan.tfplan]
 
     subgraph AWS[AWS Account]
-        APPLY --> VPC[VPC + Public/Private Subnets\nIGW + NAT + Route Tables]
-        APPLY --> IAM[IAM Roles\nCluster + Node + Policy Attachments]
-        VPC --> EKS[EKS Cluster + Managed Node Group\n+ Security Groups]
+        APPLY --> VPC[VPC + Public/Private Subnets<br/>IGW + NAT + Route Tables]
+        APPLY --> IAM[IAM Roles<br/>Cluster + Node + Policy Attachments]
+        VPC --> EKS[EKS Cluster + Managed Node Group<br/>+ Security Groups]
         IAM --> EKS
     end
 
-    style GH fill:#1e1e2f,stroke:#22c55e,stroke-width:2px
-    style EKS fill:#0f172a,stroke:#3b82f6,stroke-width:2px
-    style GATE fill:#3b0764,stroke:#a855f7,stroke-width:2px
+    style GH fill:#16a34a,stroke:#065f46,stroke-width:2px,color:#ffffff
+    style EKS fill:#2563eb,stroke:#1e3a8a,stroke-width:2px,color:#ffffff
+    style GATE fill:#7c3aed,stroke:#4c1d95,stroke-width:2px,color:#ffffff
 ```
 
 The GitHub Actions credential step assumes an AWS IAM role via OIDC, keeping the pipeline free of static secrets:
